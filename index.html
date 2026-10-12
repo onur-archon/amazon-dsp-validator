@@ -19,6 +19,7 @@
     .badge { font-weight: bold; padding: 4px 8px; border-radius: 4px; }
     .badge-pass { background: #28a745; color: white; }
     .badge-fail { background: #dc3545; color: white; }
+    .badge-warn { background: #ffc107; color: #111; }
     video { display: none; }
   </style>
 </head>
@@ -28,7 +29,7 @@
   <h1>Amazon DSP / Prime Video Ads Specs Validator</h1>
 
   <div class="section">
-    <label>Video Dosyası Seçin (.mp4, .mov, .webm):</label>
+    <label for="videoInput">Video Dosyası Seçin (.mp4, .mov, .mpeg, .ts):</label>
     <input type="file" id="videoInput" accept="video/*">
   </div>
 
@@ -37,18 +38,11 @@
 </div>
 
 <script>
-  const SPECS = {
-    maxFileSizeMB: 500,
-    minWidth: 1920,
-    minHeight: 1080,
-    minVideoBitrateMbps: 15
-  };
-
   document.getElementById('videoInput').addEventListener('change', async (e) => {
     const file = e.target.files[0];
     if (!file) return;
 
-    renderMessage("Video yükleniyor ve analiz ediliyor...", "warn");
+    renderMessage("Video parametreleri taranıyor...", "warn");
 
     const videoElement = document.getElementById('hiddenVideo');
     const objectUrl = URL.createObjectURL(file);
@@ -57,23 +51,31 @@
     videoElement.onloadedmetadata = async () => {
       let checks = [];
 
-      // 1. Dosya Boyutu Kontrolü
+      // 1. Format / Uzantı Kontrolü
+      const ext = file.name.split('.').pop().toLowerCase();
+      const validExts = ['mp4', 'mov', 'mpg', 'mpeg', 'm2p', 'm2t', 'm2ts', 'ps', 'ts'];
+      checks.push({
+        label: `Format / Uzantı: .${ext} (Desteklenenler: MP4, MOV, MPEG, TS)`,
+        status: validExts.includes(ext)
+      });
+
+      // 2. Max File Size (500MB)
       const fileSizeMB = file.size / (1024 * 1024);
       checks.push({
         label: `Dosya Boyutu: ${fileSizeMB.toFixed(2)} MB (Max: 500 MB)`,
-        status: fileSizeMB <= SPECS.maxFileSizeMB
+        status: fileSizeMB <= 500
       });
 
-      // 2. Çözünürlük Kontrolü
+      // 3. Minimum Frame Size (1920x1080)
       const width = videoElement.videoWidth;
       const height = videoElement.videoHeight;
-      const is1080p = width >= SPECS.minWidth && height >= SPECS.minHeight;
+      const is1080p = width >= 1920 && height >= 1080;
       checks.push({
         label: `Çözünürlük: ${width}x${height} (Minimum: 1920x1080)`,
         status: is1080p
       });
 
-      // 3. Aspect Ratio Kontrolü
+      // 4. Aspect Ratio (16:9)
       const ratio = width / height;
       const is169 = Math.abs(ratio - (16 / 9)) < 0.05;
       checks.push({
@@ -81,14 +83,19 @@
         status: is169
       });
 
-      // 4. Video Bitrate Tahmini (Dosya Boyutu / Süre)
+      // 5. Video Bitrate Kontrolü
       const durationSec = videoElement.duration;
       if (durationSec && durationSec > 0) {
-        const totalBitrateBps = (file.size * 8) / durationSec;
-        const totalBitrateMbps = totalBitrateBps / 1000000;
+        const totalBitrateMbps = ((file.size * 8) / durationSec) / 1000000;
+        
         checks.push({
-          label: `Tahmini Toplam Bitrate: ${totalBitrateMbps.toFixed(2)} Mbps (Minimum Prime Video: 15 Mbps)`,
-          status: totalBitrateMbps >= SPECS.minVideoBitrateMbps
+          label: `Tahmini Video Bitrate: ${totalBitrateMbps.toFixed(2)} Mbps (Prime Video Min: 15 Mbps)`,
+          status: totalBitrateMbps >= 15
+        });
+
+        checks.push({
+          label: `Önerilen Prime Video Bitrate: ${totalBitrateMbps.toFixed(2)} Mbps (Tavsiye Edilen: 50 Mbps)`,
+          status: totalBitrateMbps >= 50 ? true : 'warn'
         });
 
         checks.push({
@@ -97,14 +104,19 @@
         });
       }
 
-      // 5. Ses Akışı Kontrolü
-      const hasAudio = videoElement.webkitAudioDecodedByteCount > 0 || 
-                       videoElement.audioTracks?.length > 0 || 
-                       (videoElement.mozHasAudio !== undefined ? videoElement.mozHasAudio : true);
-      
+      // 6. Kare Hızı (FPS)
+      let fps = 24;
+      if ('getVideoPlaybackQuality' in videoElement) {
+        const quality = videoElement.getVideoPlaybackQuality();
+        if (quality.totalVideoFrames && durationSec) {
+          fps = Math.round(quality.totalVideoFrames / durationSec);
+        }
+      }
+      const validFPS = [23.976, 24, 25, 29.97, 30];
+      const isValidFPS = validFPS.some(f => Math.abs(f - fps) <= 1);
       checks.push({
-        label: `Ses Akışı (Audio Track): ${hasAudio ? 'Mevcut' : 'Tespit Edilemedi'}`,
-        status: hasAudio
+        label: `Kare Hızı (FPS): ~${fps} fps (Desteklenen: 23.976, 24, 25, 29.97)`,
+        status: isValidFPS
       });
 
       renderResults(checks);
@@ -118,14 +130,28 @@
 
   function renderResults(checks) {
     const container = document.getElementById('output');
-    container.innerHTML = "<h3>Uyumsuzluk & Doğrulama Raporu:</h3>";
+    container.innerHTML = "<h3>Amazon DSP Uyumsuzluk & Doğrulama Raporu:</h3>";
 
     checks.forEach(c => {
       const card = document.createElement('div');
-      card.className = `status-card ${c.status ? 'pass' : 'fail'}`;
+      let statusClass = 'fail';
+      let badgeClass = 'badge-fail';
+      let badgeText = 'HATALI';
+
+      if (c.status === true) {
+        statusClass = 'pass';
+        badgeClass = 'badge-pass';
+        badgeText = 'UYGUN';
+      } else if (c.status === 'warn') {
+        statusClass = 'warn';
+        badgeClass = 'badge-warn';
+        badgeText = 'TAVSİYE';
+      }
+
+      card.className = `status-card ${statusClass}`;
       card.innerHTML = `
         <span>${c.label}</span>
-        <span class="badge ${c.status ? 'badge-pass' : 'badge-fail'}">${c.status ? 'UYGUN' : 'HATALI'}</span>
+        <span class="badge ${badgeClass}">${badgeText}</span>
       `;
       container.appendChild(card);
     });
