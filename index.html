@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Amazon DSP Video Specs Validator</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f4f6f8; margin: 0; padding: 20px; }
+    .container { max-width: 900px; margin: 0 auto; background: #fff; padding: 25px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.08); }
+    h1 { color: #0f1111; font-size: 22px; border-bottom: 2px solid #e7e7e7; padding-bottom: 10px; }
+    .section { margin-bottom: 20px; padding: 15px; border: 1px solid #e2e8f0; border-radius: 8px; background: #fafafa; }
+    label { font-weight: bold; display: block; margin-bottom: 8px; }
+    input[type="file"] { width: 100%; box-sizing: border-box; padding: 10px; margin-bottom: 10px; border: 1px solid #ccc; border-radius: 6px; }
+    .results { margin-top: 25px; }
+    .status-card { padding: 12px 16px; margin-bottom: 8px; border-radius: 6px; font-size: 14px; display: flex; justify-content: space-between; align-items: center; }
+    .pass { background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+    .fail { background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+    .warn { background-color: #fff3cd; color: #856404; border: 1px solid #ffeeba; }
+    .badge { font-weight: bold; padding: 4px 8px; border-radius: 4px; }
+    .badge-pass { background: #28a745; color: white; }
+    .badge-fail { background: #dc3545; color: white; }
+    video { display: none; }
+  </style>
+</head>
+<body>
+
+<div class="container">
+  <h1>Amazon DSP / Prime Video Ads Specs Validator</h1>
+
+  <div class="section">
+    <label>Video Dosyası Seçin (.mp4, .mov, .webm):</label>
+    <input type="file" id="videoInput" accept="video/*">
+  </div>
+
+  <div id="output" class="results"></div>
+  <video id="hiddenVideo" controls></video>
+</div>
+
+<script>
+  const SPECS = {
+    maxFileSizeMB: 500,
+    minWidth: 1920,
+    minHeight: 1080,
+    minVideoBitrateMbps: 15
+  };
+
+  document.getElementById('videoInput').addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    renderMessage("Video yükleniyor ve analiz ediliyor...", "warn");
+
+    const videoElement = document.getElementById('hiddenVideo');
+    const objectUrl = URL.createObjectURL(file);
+    videoElement.src = objectUrl;
+
+    videoElement.onloadedmetadata = async () => {
+      let checks = [];
+
+      // 1. Dosya Boyutu Kontrolü
+      const fileSizeMB = file.size / (1024 * 1024);
+      checks.push({
+        label: `Dosya Boyutu: ${fileSizeMB.toFixed(2)} MB (Max: 500 MB)`,
+        status: fileSizeMB <= SPECS.maxFileSizeMB
+      });
+
+      // 2. Çözünürlük Kontrolü
+      const width = videoElement.videoWidth;
+      const height = videoElement.videoHeight;
+      const is1080p = width >= SPECS.minWidth && height >= SPECS.minHeight;
+      checks.push({
+        label: `Çözünürlük: ${width}x${height} (Minimum: 1920x1080)`,
+        status: is1080p
+      });
+
+      // 3. Aspect Ratio Kontrolü
+      const ratio = width / height;
+      const is169 = Math.abs(ratio - (16 / 9)) < 0.05;
+      checks.push({
+        label: `En-Boy Oranı: ${is169 ? '16:9' : ratio.toFixed(2)} (Gerekli: 16:9)`,
+        status: is169
+      });
+
+      // 4. Video Bitrate Tahmini (Dosya Boyutu / Süre)
+      const durationSec = videoElement.duration;
+      if (durationSec && durationSec > 0) {
+        const totalBitrateBps = (file.size * 8) / durationSec;
+        const totalBitrateMbps = totalBitrateBps / 1000000;
+        checks.push({
+          label: `Tahmini Toplam Bitrate: ${totalBitrateMbps.toFixed(2)} Mbps (Minimum Prime Video: 15 Mbps)`,
+          status: totalBitrateMbps >= SPECS.minVideoBitrateMbps
+        });
+
+        checks.push({
+          label: `Video Süresi: ${durationSec.toFixed(1)} Saniye`,
+          status: true
+        });
+      }
+
+      // 5. Ses Akışı Kontrolü
+      const hasAudio = videoElement.webkitAudioDecodedByteCount > 0 || 
+                       videoElement.audioTracks?.length > 0 || 
+                       (videoElement.mozHasAudio !== undefined ? videoElement.mozHasAudio : true);
+      
+      checks.push({
+        label: `Ses Akışı (Audio Track): ${hasAudio ? 'Mevcut' : 'Tespit Edilemedi'}`,
+        status: hasAudio
+      });
+
+      renderResults(checks);
+      URL.revokeObjectURL(objectUrl);
+    };
+
+    videoElement.onerror = () => {
+      renderMessage("Video dosyası okunamadı veya biçim tarayıcı tarafından desteklenmiyor.", "fail");
+    };
+  });
+
+  function renderResults(checks) {
+    const container = document.getElementById('output');
+    container.innerHTML = "<h3>Uyumsuzluk & Doğrulama Raporu:</h3>";
+
+    checks.forEach(c => {
+      const card = document.createElement('div');
+      card.className = `status-card ${c.status ? 'pass' : 'fail'}`;
+      card.innerHTML = `
+        <span>${c.label}</span>
+        <span class="badge ${c.status ? 'badge-pass' : 'badge-fail'}">${c.status ? 'UYGUN' : 'HATALI'}</span>
+      `;
+      container.appendChild(card);
+    });
+  }
+
+  function renderMessage(msg, type) {
+    document.getElementById('output').innerHTML = `<div class="status-card ${type}">${msg}</div>`;
+  }
+</script>
+</body>
+</html>
